@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - rmd-security-exe-v03
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
