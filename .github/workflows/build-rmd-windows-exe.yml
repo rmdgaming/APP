@@ -1,0 +1,77 @@
+name: Build RMD Windows EXE
+
+on:
+  push:
+    branches:
+      - rmd-security-exe-v03
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+
+      - name: Extract RMD source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path rmd | Out-Null
+          tar -xzf RMD-0.3.0-source.tar.gz -C rmd
+          Remove-Item -Recurse -Force rmd\.pytest_cache -ErrorAction SilentlyContinue
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: rmd/pyproject.toml
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build and test installer
+        shell: pwsh
+        working-directory: rmd
+        run: |
+          $python = (Get-Command python.exe).Source
+          $innoCandidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $inno = $innoCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $inno) {
+            $inno = (Get-ChildItem 'C:\Program Files*' -Filter ISCC.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          if (-not $inno) { throw 'Inno Setup compiler ISCC.exe was not found.' }
+          & .\scripts\build_windows_installer.ps1 -PythonPath $python -InnoSetupPath $inno
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify installer exists
+        shell: pwsh
+        working-directory: rmd
+        run: |
+          $installer = Resolve-Path .\dist-installer\RMD-Setup-0.3.0.exe
+          Get-Item $installer | Format-List FullName, Length, LastWriteTime
+          Get-FileHash $installer -Algorithm SHA256
+
+      - name: Upload single EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: RMD-Setup-0.3.0
+          path: rmd/dist-installer/RMD-Setup-0.3.0.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
