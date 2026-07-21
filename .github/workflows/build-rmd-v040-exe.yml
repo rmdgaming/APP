@@ -25,7 +25,7 @@ jobs:
         run: |
           $archive = Join-Path $PWD 'RMD-0.4.0-reconstructed.tar.gz'
           $diagnostics = Join-Path $PWD 'RMD-source-diagnostics.txt'
-          $parts = @(Get-ChildItem 'rmd-build/chunks/part-*.b64' | Sort-Object Name)
+          $parts = @(Get-ChildItem 'rmd-build/chunks/part-*.b64' | Where-Object { $_.Name -ne 'part-010.b64' } | Sort-Object Name)
           "part_count=$($parts.Count)" | Set-Content $diagnostics -Encoding ascii
           $stream = [System.IO.File]::Create($archive)
           try {
@@ -43,7 +43,7 @@ jobs:
           "actual_sha256=$actual" | Add-Content $diagnostics -Encoding ascii
           "expected_sha256=$expected" | Add-Content $diagnostics -Encoding ascii
           "archive_length=$((Get-Item $archive).Length)" | Add-Content $diagnostics -Encoding ascii
-          if ($parts.Count -ne 12) { throw "Expected 12 source chunks, found $($parts.Count)." }
+          if ($parts.Count -ne 13) { throw "Expected 13 source chunks, found $($parts.Count)." }
           if ($actual -ne $expected) { throw "Source archive hash mismatch: $actual" }
           New-Item -ItemType Directory -Force -Path rmd-security | Out-Null
           tar -xzf $archive -C rmd-security
