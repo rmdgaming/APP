@@ -17,26 +17,49 @@ jobs:
     steps:
       - name: Checkout build branch
         uses: actions/checkout@v4
+        with:
+          show-progress: false
 
       - name: Reconstruct verified source archive
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'RMD-0.4.0-source.tar.gz'
+          $archive = Join-Path $PWD 'RMD-0.4.0-reconstructed.tar.gz'
+          $diagnostics = Join-Path $PWD 'RMD-source-diagnostics.txt'
+          $parts = @(Get-ChildItem 'rmd-build/chunks/part-*.b64' | Sort-Object Name)
+          "part_count=$($parts.Count)" | Set-Content $diagnostics -Encoding ascii
           $stream = [System.IO.File]::Create($archive)
           try {
-            Get-ChildItem 'rmd-build/chunks/part-*.b64' | Sort-Object Name | ForEach-Object {
-              $text = [System.IO.File]::ReadAllText($_.FullName).Trim()
+            foreach ($part in $parts) {
+              $text = [System.IO.File]::ReadAllText($part.FullName).Trim()
               $bytes = [Convert]::FromBase64String($text)
               $stream.Write($bytes, 0, $bytes.Length)
+              "$($part.Name) text_length=$($text.Length) decoded_length=$($bytes.Length) git_blob=$(git hash-object $part.FullName)" | Add-Content $diagnostics -Encoding ascii
             }
           } finally {
             $stream.Dispose()
           }
           $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           $expected = '3a33b50b8bc46a0a49ad912531ff03b00d666a12e3d0d80d1099b8a0b2a6f2f3'
+          "actual_sha256=$actual" | Add-Content $diagnostics -Encoding ascii
+          "expected_sha256=$expected" | Add-Content $diagnostics -Encoding ascii
+          "archive_length=$((Get-Item $archive).Length)" | Add-Content $diagnostics -Encoding ascii
+          if ($parts.Count -ne 12) { throw "Expected 12 source chunks, found $($parts.Count)." }
           if ($actual -ne $expected) { throw "Source archive hash mismatch: $actual" }
           New-Item -ItemType Directory -Force -Path rmd-security | Out-Null
           tar -xzf $archive -C rmd-security
+          if ($LASTEXITCODE -ne 0) { throw "Windows tar failed with exit code $LASTEXITCODE." }
+
+      - name: Upload source diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RMD-Source-Diagnostics
+          path: |
+            RMD-source-diagnostics.txt
+            RMD-0.4.0-reconstructed.tar.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 7
 
       - name: Set up Python
         uses: actions/setup-python@v5
