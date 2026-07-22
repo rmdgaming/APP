@@ -1,11 +1,11 @@
-name: Build RMD 0.5 Windows EXE
+name: Build RMD 0.5.1 Windows EXE
 
 on:
   pull_request:
   workflow_dispatch:
   push:
     branches:
-      - rmd-security-v050-exe-build
+      - rmd-security-v051-exe-build
 
 permissions:
   contents: read
@@ -82,6 +82,30 @@ jobs:
           $version = Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.5.0"'
           if (-not $version) { throw 'The reconstructed source is not RMD 0.5.0.' }
 
+      - name: Reconstruct and apply verified RMD 0.5.1 hotfix
+        shell: pwsh
+        run: |
+          $overlay = Join-Path $PWD 'RMD-0.5.1-overlay.tar.xz'
+          $parts = @(Get-ChildItem 'rmd-build/overlay051/part-*.b64' | Sort-Object Name)
+          if ($parts.Count -ne 9) { throw "Expected 9 RMD 0.5.1 overlay chunks, found $($parts.Count)." }
+          $stream = [System.IO.File]::Create($overlay)
+          try {
+            foreach ($part in $parts) {
+              $text = [System.IO.File]::ReadAllText($part.FullName).Trim()
+              $bytes = [Convert]::FromBase64String($text)
+              $stream.Write($bytes, 0, $bytes.Length)
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $actual = (Get-FileHash $overlay -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = '7aed816e806e7ac8cf8aaf61d56ce2f194b377b11937e8e20b0fe2c78b73045d'
+          if ($actual -ne $expected) { throw "RMD 0.5.1 overlay hash mismatch: $actual" }
+          tar -xJf $overlay -C rmd-security
+          if ($LASTEXITCODE -ne 0) { throw "Windows tar could not apply the verified RMD 0.5.1 hotfix." }
+          $version = Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.5.1"'
+          if (-not $version) { throw 'The reconstructed source is not RMD 0.5.1.' }
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -93,7 +117,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build, test, and package RMD 0.5
+      - name: Build, test, and package RMD 0.5.1
         shell: pwsh
         working-directory: rmd-security
         run: |
@@ -114,7 +138,7 @@ jobs:
         shell: pwsh
         working-directory: rmd-security
         run: |
-          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.5.0.exe'
+          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.5.1.exe'
           $nativeHost = Resolve-Path 'dist\RMD-NativeHost.exe'
           $agent = Resolve-Path 'dist\RMD-Agent.exe'
           $chromiumManifest = Resolve-Path 'extension\chromium\manifest.json'
@@ -125,16 +149,16 @@ jobs:
           $header = [System.IO.File]::ReadAllBytes($installer)[0..1]
           if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) { throw 'Final installer is not a Windows PE executable.' }
           $hash = Get-FileHash $installer -Algorithm SHA256
-          "$($hash.Hash)  RMD-Setup-0.5.0.exe" | Set-Content 'dist-installer\RMD-Setup-0.5.0-SHA256.txt' -Encoding ascii
+          "$($hash.Hash)  RMD-Setup-0.5.1.exe" | Set-Content 'dist-installer\RMD-Setup-0.5.1-SHA256.txt' -Encoding ascii
           $hash | Format-List
 
       - name: Upload single installer EXE
         uses: actions/upload-artifact@v4
         with:
-          name: RMD-Setup-0.5.0
+          name: RMD-Setup-0.5.1
           path: |
-            rmd-security/dist-installer/RMD-Setup-0.5.0.exe
-            rmd-security/dist-installer/RMD-Setup-0.5.0-SHA256.txt
+            rmd-security/dist-installer/RMD-Setup-0.5.1.exe
+            rmd-security/dist-installer/RMD-Setup-0.5.1-SHA256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
