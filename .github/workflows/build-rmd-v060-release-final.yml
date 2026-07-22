@@ -1,8 +1,11 @@
-name: Build final RMD 0.6.0 release
+name: Build and publish RMD 0.6.1 managed update
 
 on:
   pull_request:
   workflow_dispatch:
+  push:
+    branches:
+      - rmd-security-v061-managed-update
 
 permissions:
   contents: write
@@ -12,7 +15,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
-      - name: Checkout build branch
+      - name: Checkout managed update branch
         uses: actions/checkout@v4
         with:
           show-progress: false
@@ -84,8 +87,11 @@ jobs:
           tar -xJf 'RMD-0.6.0-packaging-fix.tar.xz' -C rmd-security
           if ($LASTEXITCODE -ne 0) { throw 'Could not apply the verified RMD 0.6 packaging fix.' }
 
-          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.6.0"')) { throw 'The reconstructed source is not RMD 0.6.0.' }
-          if (Select-String -Path 'rmd-security/packaging/windows/RMD.iss' -Pattern 'CmdLineParamExists') { throw 'The invalid installer command-line function is still present.' }
+          Join-B64Parts 'rmd-build/overlay061/part-*.b64' 7 'RMD-0.6.1-overlay.tar.xz' 'b0f328004b9b595dab6a1b60ed789616754ef69e35ea533d0de591217f3f6845'
+          Apply-Overlay 'RMD-0.6.1-overlay.tar.xz' -DeletePaths
+
+          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.6.1"')) { throw 'The reconstructed source is not RMD 0.6.1.' }
+          if (-not (Select-String -Path 'rmd-security/scripts/build_windows_installer.ps1' -Pattern '--minimum-version "0.6.0"')) { throw 'The update is not compatible with RMD 0.6.0.' }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -98,7 +104,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build, test, and package RMD 0.6.0
+      - name: Build, test, and package RMD 0.6.1
         shell: pwsh
         working-directory: rmd-security
         run: |
@@ -114,56 +120,56 @@ jobs:
           .\scripts\build_windows_installer.ps1 -PythonPath $python -InnoSetupPath $inno
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify final installer and update manifest
+      - name: Verify managed update release
         shell: pwsh
         working-directory: rmd-security
         run: |
-          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.6.0.exe'
+          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.6.1.exe'
           $manifest = Resolve-Path 'dist-installer\rmd-update.json'
-          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.6.0-SHA256.txt'
+          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.6.1-SHA256.txt'
           $nativeHost = Resolve-Path 'dist\RMD-NativeHost.exe'
           $agent = Resolve-Path 'dist\RMD-Agent.exe'
           foreach ($path in @($installer, $manifest, $checksum, $nativeHost, $agent)) { Get-Item $path | Format-List FullName,Length,LastWriteTime }
           $header = [System.IO.File]::ReadAllBytes($installer)[0..1]
           if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) { throw 'Final installer is not a Windows PE executable.' }
           $payload = Get-Content $manifest -Raw | ConvertFrom-Json
-          if ($payload.version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64') { throw 'Invalid update manifest identity.' }
+          if ($payload.version -ne '0.6.1' -or $payload.minimum_version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64') { throw 'Invalid managed update manifest identity.' }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $payload.installer.sha256.ToLowerInvariant()) { throw 'Update manifest SHA-256 mismatch.' }
           if ((Get-Item $installer).Length -ne [int64]$payload.installer.size) { throw 'Update manifest size mismatch.' }
-          if ($payload.installer.asset_name -ne 'RMD-Setup-0.6.0.exe') { throw 'Update manifest asset mismatch.' }
+          if ($payload.installer.asset_name -ne 'RMD-Setup-0.6.1.exe') { throw 'Update manifest asset mismatch.' }
 
-      - name: Upload final release artifact
+      - name: Upload managed update artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RMD-Setup-0.6.0-Final
+          name: RMD-Setup-0.6.1-Managed
           path: |
-            rmd-security/dist-installer/RMD-Setup-0.6.0.exe
-            rmd-security/dist-installer/RMD-Setup-0.6.0-SHA256.txt
+            rmd-security/dist-installer/RMD-Setup-0.6.1.exe
+            rmd-security/dist-installer/RMD-Setup-0.6.1-SHA256.txt
             rmd-security/dist-installer/rmd-update.json
             rmd-security/RELEASE_NOTES.md
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-      - name: Publish private update release
+      - name: Publish RMD 0.6.1 to the in-app update feed
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: rmd-security
         run: |
-          $tag = 'rmd-v0.6.0'
+          $tag = 'rmd-v0.6.1'
           $assets = @(
-            'dist-installer\RMD-Setup-0.6.0.exe',
-            'dist-installer\RMD-Setup-0.6.0-SHA256.txt',
+            'dist-installer\RMD-Setup-0.6.1.exe',
+            'dist-installer\RMD-Setup-0.6.1-SHA256.txt',
             'dist-installer\rmd-update.json'
           )
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            gh release edit $tag --title 'RMD Security 0.6.0' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+            gh release edit $tag --title 'RMD Security 0.6.1' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create $tag @assets --target rmd-security-v060-exe-build --title 'RMD Security 0.6.0' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+            gh release create $tag @assets --target rmd-security-v061-managed-update --title 'RMD Security 0.6.1' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
