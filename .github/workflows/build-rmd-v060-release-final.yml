@@ -1,11 +1,11 @@
-name: Build and publish RMD 0.6.1 managed update
+name: Build and publish RMD 0.7.0 professional update
 
 on:
   pull_request:
   workflow_dispatch:
   push:
     branches:
-      - rmd-security-v061-managed-update
+      - rmd-security-v070-professional-update
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
-      - name: Checkout managed update branch
+      - name: Checkout professional update branch
         uses: actions/checkout@v4
         with:
           show-progress: false
@@ -90,8 +90,22 @@ jobs:
           Join-B64Parts 'rmd-build/overlay061/part-*.b64' 7 'RMD-0.6.1-overlay.tar.xz' 'b0f328004b9b595dab6a1b60ed789616754ef69e35ea533d0de591217f3f6845'
           Apply-Overlay 'RMD-0.6.1-overlay.tar.xz' -DeletePaths
 
-          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.6.1"')) { throw 'The reconstructed source is not RMD 0.6.1.' }
-          if (-not (Select-String -Path 'rmd-security/scripts/build_windows_installer.ps1' -Pattern '--minimum-version "0.6.0"')) { throw 'The update is not compatible with RMD 0.6.0.' }
+          Join-B64Parts 'rmd-build/overlay070s/part-*.b64' 9 'RMD-0.7.0-overlay.tar.xz' '9c54856676a3aa96aa5d225b5daf077a75300924c2ccebb801c26168ead09d62'
+          Apply-Overlay 'RMD-0.7.0-overlay.tar.xz'
+
+          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.7.0"')) { throw 'The reconstructed source is not RMD 0.7.0.' }
+          if (-not (Select-String -Path 'rmd-security/scripts/build_windows_installer.ps1' -Pattern '--minimum-version "0.6.0"')) { throw 'The update is not compatible with RMD 0.6.0 and later.' }
+          foreach ($required in @(
+            'rmd-security/src/rmd/risk_engine.py',
+            'rmd-security/src/rmd/security_profiles.py',
+            'rmd-security/src/rmd/runtime_policy.py',
+            'rmd-security/src/rmd/domain_guard.py',
+            'rmd-security/src/rmd/password_tools.py',
+            'rmd-security/src/rmd/totp.py',
+            'rmd-security/src/rmd/recovery.py'
+          )) {
+            if (-not (Test-Path $required)) { throw "Missing professional component: $required" }
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -104,7 +118,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build, test, and package RMD 0.6.1
+      - name: Build, test, and package RMD 0.7.0
         shell: pwsh
         working-directory: rmd-security
         run: |
@@ -120,56 +134,59 @@ jobs:
           .\scripts\build_windows_installer.ps1 -PythonPath $python -InnoSetupPath $inno
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify managed update release
+      - name: Verify professional update release
         shell: pwsh
         working-directory: rmd-security
         run: |
-          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.6.1.exe'
+          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.7.0.exe'
           $manifest = Resolve-Path 'dist-installer\rmd-update.json'
-          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.6.1-SHA256.txt'
+          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.7.0-SHA256.txt'
           $nativeHost = Resolve-Path 'dist\RMD-NativeHost.exe'
           $agent = Resolve-Path 'dist\RMD-Agent.exe'
           foreach ($path in @($installer, $manifest, $checksum, $nativeHost, $agent)) { Get-Item $path | Format-List FullName,Length,LastWriteTime }
           $header = [System.IO.File]::ReadAllBytes($installer)[0..1]
           if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) { throw 'Final installer is not a Windows PE executable.' }
           $payload = Get-Content $manifest -Raw | ConvertFrom-Json
-          if ($payload.version -ne '0.6.1' -or $payload.minimum_version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64') { throw 'Invalid managed update manifest identity.' }
+          if ($payload.version -ne '0.7.0' -or $payload.minimum_version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64' -or $payload.channel -ne 'stable') { throw 'Invalid professional update manifest identity.' }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $payload.installer.sha256.ToLowerInvariant()) { throw 'Update manifest SHA-256 mismatch.' }
           if ((Get-Item $installer).Length -ne [int64]$payload.installer.size) { throw 'Update manifest size mismatch.' }
-          if ($payload.installer.asset_name -ne 'RMD-Setup-0.6.1.exe') { throw 'Update manifest asset mismatch.' }
+          if ($payload.installer.asset_name -ne 'RMD-Setup-0.7.0.exe') { throw 'Update manifest asset mismatch.' }
+          $checksumText = (Get-Content $checksum -Raw).ToLowerInvariant()
+          if (-not $checksumText.Contains($hash)) { throw 'Checksum file does not contain the final installer hash.' }
 
-      - name: Upload managed update artifact
+      - name: Upload professional update artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RMD-Setup-0.6.1-Managed
+          name: RMD-Setup-0.7.0-Professional
           path: |
-            rmd-security/dist-installer/RMD-Setup-0.6.1.exe
-            rmd-security/dist-installer/RMD-Setup-0.6.1-SHA256.txt
+            rmd-security/dist-installer/RMD-Setup-0.7.0.exe
+            rmd-security/dist-installer/RMD-Setup-0.7.0-SHA256.txt
             rmd-security/dist-installer/rmd-update.json
             rmd-security/RELEASE_NOTES.md
+            rmd-security/docs/PROFESSIONAL_SECURITY_CENTER.md
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-      - name: Publish RMD 0.6.1 to the in-app update feed
+      - name: Publish RMD 0.7.0 to the in-app update feed
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: rmd-security
         run: |
-          $tag = 'rmd-v0.6.1'
+          $tag = 'rmd-v0.7.0'
           $assets = @(
-            'dist-installer\RMD-Setup-0.6.1.exe',
-            'dist-installer\RMD-Setup-0.6.1-SHA256.txt',
+            'dist-installer\RMD-Setup-0.7.0.exe',
+            'dist-installer\RMD-Setup-0.7.0-SHA256.txt',
             'dist-installer\rmd-update.json'
           )
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            gh release edit $tag --title 'RMD Security 0.6.1' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+            gh release edit $tag --title 'RMD Security 0.7.0 — Professional Security Center' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create $tag @assets --target rmd-security-v061-managed-update --title 'RMD Security 0.6.1' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+            gh release create $tag @assets --target rmd-security-v070-professional-update --title 'RMD Security 0.7.0 — Professional Security Center' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
