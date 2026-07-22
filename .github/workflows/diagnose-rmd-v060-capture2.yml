@@ -1,0 +1,69 @@
+name: Capture RMD 0.6 packaging failure
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Capture full build output
+        id: build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $source = '.\.github\scripts\diagnose-rmd-v060.ps1'
+          $fixed = '.\.github\scripts\diagnose-rmd-v060-fixed.ps1'
+          $text = [System.IO.File]::ReadAllText($source)
+          $text = $text.Replace('Source hash mismatch for $OutputPath: $actual', 'Source hash mismatch for ${OutputPath}: $actual')
+          [System.IO.File]::WriteAllText($fixed, $text)
+
+          $log = Join-Path $PWD 'rmd-v060-packaging-output.log'
+          $failed = $false
+          try {
+            & $fixed *>&1 | Tee-Object -FilePath $log
+            if (-not $?) { $failed = $true }
+          } catch {
+            $failed = $true
+            ($_ | Out-String) | Tee-Object -FilePath $log -Append
+            ($_.ScriptStackTrace | Out-String) | Tee-Object -FilePath $log -Append
+          }
+          if ($failed) { exit 1 }
+
+      - name: Upload packaging diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RMD-0.6-Packaging-Diagnostics
+          path: |
+            rmd-v060-packaging-output.log
+            rmd-v060-build-diagnostics.log
+            rmd-security/dist-installer/**
+            rmd-security/build/**/warn-*.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Preserve failure status
+        if: steps.build.outcome == 'failure'
+        shell: pwsh
+        run: exit 1
