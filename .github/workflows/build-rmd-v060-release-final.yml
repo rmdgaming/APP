@@ -1,0 +1,200 @@
+name: Build and publish RMD 0.8.0 live security control update
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+      - rmd-security-v080-google-ai-control
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout live security control update branch
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Reconstruct all verified source layers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Join-B64Parts {
+            param(
+              [string]$Pattern,
+              [int]$ExpectedCount,
+              [string]$OutputPath,
+              [string]$ExpectedHash,
+              [string]$ExcludedName = ''
+            )
+            $parts = @(Get-ChildItem $Pattern | Where-Object { (-not $ExcludedName) -or $_.Name -ne $ExcludedName } | Sort-Object Name)
+            if ($parts.Count -ne $ExpectedCount) { throw "Expected $ExpectedCount parts for $Pattern, found $($parts.Count)." }
+            $stream = [System.IO.File]::Create($OutputPath)
+            try {
+              foreach ($part in $parts) {
+                $bytes = [Convert]::FromBase64String([System.IO.File]::ReadAllText($part.FullName).Trim())
+                $stream.Write($bytes, 0, $bytes.Length)
+              }
+            } finally {
+              $stream.Dispose()
+            }
+            $actual = (Get-FileHash $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $ExpectedHash) { throw "Hash mismatch for ${OutputPath}: $actual" }
+          }
+
+          function Apply-Overlay {
+            param([string]$Archive, [switch]$DeletePaths, [string]$SpecialServerMain = '')
+            $stage = "$Archive.stage"
+            New-Item -ItemType Directory -Force -Path $stage | Out-Null
+            tar -xJf $Archive -C $stage
+            if ($LASTEXITCODE -ne 0) { throw "Could not extract $Archive." }
+            if ($DeletePaths) {
+              $deleteFile = Join-Path $stage 'DELETE_PATHS.txt'
+              if (Test-Path $deleteFile) {
+                Get-Content $deleteFile | ForEach-Object {
+                  $relative = $_.Trim()
+                  if ($relative) { Remove-Item -LiteralPath (Join-Path 'rmd-security' $relative) -Recurse -Force -ErrorAction SilentlyContinue }
+                }
+              }
+            }
+            tar -xJf $Archive -C rmd-security
+            if ($LASTEXITCODE -ne 0) { throw "Could not apply $Archive." }
+            Remove-Item 'rmd-security/DELETE_PATHS.txt' -Force -ErrorAction SilentlyContinue
+            if ($SpecialServerMain) { Copy-Item $SpecialServerMain 'rmd-security/server/main.py' -Force }
+          }
+
+          Join-B64Parts 'rmd-build/chunks/part-*.b64' 13 'RMD-0.4.0.tar.gz' '3a33b50b8bc46a0a49ad912531ff03b00d666a12e3d0d80d1099b8a0b2a6f2f3' 'part-010.b64'
+          New-Item -ItemType Directory -Force -Path rmd-security | Out-Null
+          tar -xzf 'RMD-0.4.0.tar.gz' -C rmd-security
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the verified RMD 0.4 base.' }
+
+          Join-B64Parts 'rmd-build/overlay050/part-*.b64' 7 'RMD-0.5.0-overlay.tar.xz' '1267dd1d9223c3da6d046722e4f7de11f5a3a9934d04d002039048409b2807fb'
+          Apply-Overlay 'RMD-0.5.0-overlay.tar.xz' -DeletePaths -SpecialServerMain 'rmd-build/overlay050/server-main.py'
+
+          Join-B64Parts 'rmd-build/overlay051/part-*.b64' 9 'RMD-0.5.1-overlay.tar.xz' '7aed816e806e7ac8cf8aaf61d56ce2f194b377b11937e8e20b0fe2c78b73045d'
+          Apply-Overlay 'RMD-0.5.1-overlay.tar.xz'
+
+          Join-B64Parts 'rmd-build/overlay060/part-*.b64' 8 'RMD-0.6.0-overlay.tar.xz' '87e8a1b0f4f7ac525a5bb664f918d766182234ef5a7ebc040b1309e5406f6c05'
+          Apply-Overlay 'RMD-0.6.0-overlay.tar.xz' -DeletePaths
+
+          Join-B64Parts 'rmd-build/overlay060fix/part-*.b64' 1 'RMD-0.6.0-packaging-fix.tar.xz' '274b7099406d4bede7c19735a11233a3fadb1b1258dc23e8a4c4d3e2fd74e8f5'
+          tar -xJf 'RMD-0.6.0-packaging-fix.tar.xz' -C rmd-security
+          if ($LASTEXITCODE -ne 0) { throw 'Could not apply the verified RMD 0.6 packaging fix.' }
+
+          Join-B64Parts 'rmd-build/overlay061/part-*.b64' 7 'RMD-0.6.1-overlay.tar.xz' 'b0f328004b9b595dab6a1b60ed789616754ef69e35ea533d0de591217f3f6845'
+          Apply-Overlay 'RMD-0.6.1-overlay.tar.xz' -DeletePaths
+
+          Join-B64Parts 'rmd-build/overlay070s/part-*.b64' 9 'RMD-0.7.0-overlay.tar.xz' '9c54856676a3aa96aa5d225b5daf077a75300924c2ccebb801c26168ead09d62'
+          Apply-Overlay 'RMD-0.7.0-overlay.tar.xz'
+
+          Join-B64Parts 'rmd-build/overlay080/part-*.b64' 11 'RMD-0.8.0-overlay.tar.xz' '14c8713cc2614ec7b962dbab6784503dca57d41390813286b769a14c26bf49f0'
+          Apply-Overlay 'RMD-0.8.0-overlay.tar.xz'
+
+          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.8.0"')) { throw 'The reconstructed source is not RMD 0.8.0.' }
+          if (-not (Select-String -Path 'rmd-security/scripts/build_windows_installer.ps1' -Pattern '--minimum-version "0.6.0"')) { throw 'The update is not compatible with RMD 0.6.0 and later.' }
+          foreach ($required in @(
+            'rmd-security/src/rmd/google_passwords.py',
+            'rmd-security/src/rmd/live_control.py',
+            'rmd-security/src/rmd/ai_control.py',
+            'rmd-security/extension/chromium/popup.js',
+            'rmd-security/extension/chromium/service-worker.js',
+            'rmd-security/extension/firefox/popup.js',
+            'rmd-security/extension/firefox/background.js'
+          )) {
+            if (-not (Test-Path $required)) { throw "Missing RMD 0.8 component: $required" }
+          }
+          if (-not (Select-String -Path 'rmd-security/extension/chromium/service-worker.js' -Pattern 'hostname === "passwords.google.com"')) { throw 'Chromium Google Password Manager domain gate is missing.' }
+          if (-not (Select-String -Path 'rmd-security/extension/firefox/background.js' -Pattern 'hostname === "passwords.google.com"')) { throw 'Firefox Google Password Manager domain gate is missing.' }
+          if (-not (Select-String -Path 'rmd-security/extension/chromium/manifest.json' -Pattern '"downloads"')) { throw 'Chromium downloads permission is missing.' }
+          if (-not (Select-String -Path 'rmd-security/extension/firefox/manifest.json' -Pattern '"downloads"')) { throw 'Firefox downloads permission is missing.' }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: rmd-security/pyproject.toml
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build, test, and package RMD 0.8.0
+        shell: pwsh
+        working-directory: rmd-security
+        run: |
+          $python = (Get-Command python.exe).Source
+          $inno = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $inno) { throw 'Inno Setup compiler was not found.' }
+          python -m venv .windows-build-venv
+          .\.windows-build-venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.windows-build-venv\Scripts\python.exe -m pip install 'pillow>=10,<13'
+          .\scripts\build_windows_installer.ps1 -PythonPath $python -InnoSetupPath $inno
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify live security control update release
+        shell: pwsh
+        working-directory: rmd-security
+        run: |
+          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.8.0.exe'
+          $manifest = Resolve-Path 'dist-installer\rmd-update.json'
+          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.8.0-SHA256.txt'
+          $nativeHost = Resolve-Path 'dist\RMD-NativeHost.exe'
+          $agent = Resolve-Path 'dist\RMD-Agent.exe'
+          foreach ($path in @($installer, $manifest, $checksum, $nativeHost, $agent)) { Get-Item $path | Format-List FullName,Length,LastWriteTime }
+          $header = [System.IO.File]::ReadAllBytes($installer)[0..1]
+          if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) { throw 'Final installer is not a Windows PE executable.' }
+          $payload = Get-Content $manifest -Raw | ConvertFrom-Json
+          if ($payload.version -ne '0.8.0' -or $payload.minimum_version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64' -or $payload.channel -ne 'stable') { throw 'Invalid live security control update manifest identity.' }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $payload.installer.sha256.ToLowerInvariant()) { throw 'Update manifest SHA-256 mismatch.' }
+          if ((Get-Item $installer).Length -ne [int64]$payload.installer.size) { throw 'Update manifest size mismatch.' }
+          if ($payload.installer.asset_name -ne 'RMD-Setup-0.8.0.exe') { throw 'Update manifest asset mismatch.' }
+          $checksumText = (Get-Content $checksum -Raw).ToLowerInvariant()
+          if (-not $checksumText.Contains($hash)) { throw 'Checksum file does not contain the final installer hash.' }
+
+      - name: Upload live security control update artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RMD-Setup-0.8.0-Live-Control
+          path: |
+            rmd-security/dist-installer/RMD-Setup-0.8.0.exe
+            rmd-security/dist-installer/RMD-Setup-0.8.0-SHA256.txt
+            rmd-security/dist-installer/rmd-update.json
+            rmd-security/RELEASE_NOTES.md
+            rmd-security/docs/BROWSER_SETUP.md
+            rmd-security/docs/LIVE_AI_CONTROL.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Publish RMD 0.8.0 to the in-app update feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: rmd-security
+        run: |
+          $tag = 'rmd-v0.8.0'
+          $assets = @(
+            'dist-installer\RMD-Setup-0.8.0.exe',
+            'dist-installer\RMD-Setup-0.8.0-SHA256.txt',
+            'dist-installer\rmd-update.json'
+          )
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release edit $tag --title 'RMD Security 0.8.0 — Live Security Control & Google Password Migration' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $tag @assets --target rmd-security-v080-google-ai-control --title 'RMD Security 0.8.0 — Live Security Control & Google Password Migration' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
