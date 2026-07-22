@@ -1,11 +1,11 @@
-name: Build and publish RMD 0.8.0 live security control update
+name: Build and publish RMD 0.9.0 complete removal update
 
 on:
   pull_request:
   workflow_dispatch:
   push:
     branches:
-      - rmd-security-v080-google-ai-control
+      - rmd-security-v090-complete-removal
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
-      - name: Checkout live security control update branch
+      - name: Checkout complete removal update branch
         uses: actions/checkout@v4
         with:
           show-progress: false
@@ -96,23 +96,25 @@ jobs:
           Join-B64Parts 'rmd-build/overlay080/part-*.b64' 11 'RMD-0.8.0-overlay.tar.xz' '14c8713cc2614ec7b962dbab6784503dca57d41390813286b769a14c26bf49f0'
           Apply-Overlay 'RMD-0.8.0-overlay.tar.xz'
 
-          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.8.0"')) { throw 'The reconstructed source is not RMD 0.8.0.' }
+          Join-B64Parts 'rmd-build/overlay090/part-*.b64' 2 'RMD-0.9.0-overlay.tar.xz' '358b1682ec4abab1ea3cb1a5d9c3b68b7ce8b1ddff8577273d11bc8f228aa69b'
+          Apply-Overlay 'RMD-0.9.0-overlay.tar.xz' -DeletePaths
+          python 'rmd-security/scripts/apply_v090_patch.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not apply the verified RMD 0.9 release patch.' }
+
+          if (-not (Select-String -Path 'rmd-security/pyproject.toml' -Pattern 'version = "0.9.0"')) { throw 'The reconstructed source is not RMD 0.9.0.' }
           if (-not (Select-String -Path 'rmd-security/scripts/build_windows_installer.ps1' -Pattern '--minimum-version "0.6.0"')) { throw 'The update is not compatible with RMD 0.6.0 and later.' }
           foreach ($required in @(
-            'rmd-security/src/rmd/google_passwords.py',
-            'rmd-security/src/rmd/live_control.py',
-            'rmd-security/src/rmd/ai_control.py',
-            'rmd-security/extension/chromium/popup.js',
-            'rmd-security/extension/chromium/service-worker.js',
-            'rmd-security/extension/firefox/popup.js',
-            'rmd-security/extension/firefox/background.js'
+            'rmd-security/src/rmd/uninstall_center.py',
+            'rmd-security/packaging/uninstall_entry.py',
+            'rmd-security/packaging/windows/full_uninstall.ps1',
+            'rmd-security/docs/UNINSTALL.md',
+            'rmd-security/tests/test_uninstall_center.py'
           )) {
-            if (-not (Test-Path $required)) { throw "Missing RMD 0.8 component: $required" }
+            if (-not (Test-Path $required)) { throw "Missing RMD 0.9 removal component: $required" }
           }
-          if (-not (Select-String -Path 'rmd-security/extension/chromium/service-worker.js' -Pattern 'hostname === "passwords.google.com"')) { throw 'Chromium Google Password Manager domain gate is missing.' }
-          if (-not (Select-String -Path 'rmd-security/extension/firefox/background.js' -Pattern 'hostname === "passwords.google.com"')) { throw 'Firefox Google Password Manager domain gate is missing.' }
-          if (-not (Select-String -Path 'rmd-security/extension/chromium/manifest.json' -Pattern '"downloads"')) { throw 'Chromium downloads permission is missing.' }
-          if (-not (Select-String -Path 'rmd-security/extension/firefox/manifest.json' -Pattern '"downloads"')) { throw 'Firefox downloads permission is missing.' }
+          if (-not (Select-String -Path 'rmd-security/src/rmd/uninstall_center.py' -Pattern 'DELETE RMD')) { throw 'Typed destructive confirmation is missing.' }
+          if (-not (Select-String -Path 'rmd-security/packaging/windows/full_uninstall.ps1' -Pattern 'Get-CimInstance Win32_UserProfile')) { throw 'Cross-profile data cleanup is missing.' }
+          if (-not (Select-String -Path 'rmd-security/packaging/windows/RMD.iss' -Pattern 'RMD-Uninstall.exe')) { throw 'Removal Center is not included in the installer.' }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -125,7 +127,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build, test, and package RMD 0.8.0
+      - name: Build, test, and package RMD 0.9.0
         shell: pwsh
         working-directory: rmd-security
         run: |
@@ -141,60 +143,62 @@ jobs:
           .\scripts\build_windows_installer.ps1 -PythonPath $python -InnoSetupPath $inno
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify live security control update release
+      - name: Verify complete removal update release
         shell: pwsh
         working-directory: rmd-security
         run: |
-          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.8.0.exe'
+          $installer = Resolve-Path 'dist-installer\RMD-Setup-0.9.0.exe'
           $manifest = Resolve-Path 'dist-installer\rmd-update.json'
-          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.8.0-SHA256.txt'
+          $checksum = Resolve-Path 'dist-installer\RMD-Setup-0.9.0-SHA256.txt'
           $nativeHost = Resolve-Path 'dist\RMD-NativeHost.exe'
           $agent = Resolve-Path 'dist\RMD-Agent.exe'
-          foreach ($path in @($installer, $manifest, $checksum, $nativeHost, $agent)) { Get-Item $path | Format-List FullName,Length,LastWriteTime }
+          $removal = Resolve-Path 'dist\RMD-Uninstall.exe'
+          foreach ($path in @($installer, $manifest, $checksum, $nativeHost, $agent, $removal)) { Get-Item $path | Format-List FullName,Length,LastWriteTime }
           $header = [System.IO.File]::ReadAllBytes($installer)[0..1]
           if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) { throw 'Final installer is not a Windows PE executable.' }
+          $removalHeader = [System.IO.File]::ReadAllBytes($removal)[0..1]
+          if ($removalHeader[0] -ne 0x4D -or $removalHeader[1] -ne 0x5A) { throw 'Removal Center is not a Windows PE executable.' }
           $payload = Get-Content $manifest -Raw | ConvertFrom-Json
-          if ($payload.version -ne '0.8.0' -or $payload.minimum_version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64' -or $payload.channel -ne 'stable') { throw 'Invalid live security control update manifest identity.' }
+          if ($payload.version -ne '0.9.0' -or $payload.minimum_version -ne '0.6.0' -or $payload.product -ne 'rmd-security' -or $payload.platform -ne 'windows-x64' -or $payload.channel -ne 'stable') { throw 'Invalid complete removal update manifest identity.' }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $payload.installer.sha256.ToLowerInvariant()) { throw 'Update manifest SHA-256 mismatch.' }
           if ((Get-Item $installer).Length -ne [int64]$payload.installer.size) { throw 'Update manifest size mismatch.' }
-          if ($payload.installer.asset_name -ne 'RMD-Setup-0.8.0.exe') { throw 'Update manifest asset mismatch.' }
+          if ($payload.installer.asset_name -ne 'RMD-Setup-0.9.0.exe') { throw 'Update manifest asset mismatch.' }
           $checksumText = (Get-Content $checksum -Raw).ToLowerInvariant()
           if (-not $checksumText.Contains($hash)) { throw 'Checksum file does not contain the final installer hash.' }
 
-      - name: Upload live security control update artifact
+      - name: Upload complete removal update artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RMD-Setup-0.8.0-Live-Control
+          name: RMD-Setup-0.9.0-Complete-Removal
           path: |
-            rmd-security/dist-installer/RMD-Setup-0.8.0.exe
-            rmd-security/dist-installer/RMD-Setup-0.8.0-SHA256.txt
+            rmd-security/dist-installer/RMD-Setup-0.9.0.exe
+            rmd-security/dist-installer/RMD-Setup-0.9.0-SHA256.txt
             rmd-security/dist-installer/rmd-update.json
             rmd-security/RELEASE_NOTES.md
-            rmd-security/docs/BROWSER_SETUP.md
-            rmd-security/docs/LIVE_AI_CONTROL.md
+            rmd-security/docs/UNINSTALL.md
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-      - name: Publish RMD 0.8.0 to the in-app update feed
+      - name: Publish RMD 0.9.0 to the in-app update feed
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: rmd-security
         run: |
-          $tag = 'rmd-v0.8.0'
+          $tag = 'rmd-v0.9.0'
           $assets = @(
-            'dist-installer\RMD-Setup-0.8.0.exe',
-            'dist-installer\RMD-Setup-0.8.0-SHA256.txt',
+            'dist-installer\RMD-Setup-0.9.0.exe',
+            'dist-installer\RMD-Setup-0.9.0-SHA256.txt',
             'dist-installer\rmd-update.json'
           )
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            gh release edit $tag --title 'RMD Security 0.8.0 — Live Security Control & Google Password Migration' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+            gh release edit $tag --title 'RMD Security 0.9.0 — Complete Removal Center' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create $tag @assets --target rmd-security-v080-google-ai-control --title 'RMD Security 0.8.0 — Live Security Control & Google Password Migration' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
+            gh release create $tag @assets --target rmd-security-v090-complete-removal --title 'RMD Security 0.9.0 — Complete Removal Center' --notes-file RELEASE_NOTES.md --latest --repo $env:GITHUB_REPOSITORY
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
