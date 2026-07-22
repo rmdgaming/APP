@@ -1,0 +1,44 @@
+name: Diagnose RMD 0.6 Windows build PR
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Run diagnostic build
+        shell: pwsh
+        run: .\.github\scripts\diagnose-rmd-v060.ps1
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RMD-0.6-Build-Diagnostics
+          path: |
+            rmd-v060-build-diagnostics.log
+            rmd-security/dist-installer/**
+            rmd-security/build/**/warn-*.txt
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 7
